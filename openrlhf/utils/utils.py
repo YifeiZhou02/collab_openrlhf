@@ -1,7 +1,7 @@
 import os
 
 from datasets import interleave_datasets, load_dataset, load_from_disk
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoProcessor
 
 
 DEFAULT_PAD_TOKEN = "[PAD]"
@@ -16,11 +16,22 @@ def get_tokenizer(pretrain, model, padding_side="left", strategy=None, use_fast=
     # NOTE: When enable vLLM, do not resize_token_embeddings, or the vocab size will mismatch with vLLM.
     # https://github.com/facebookresearch/llama-recipes/pull/196
     if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+        tokenizer.pad_token = tokenizer.bos_token
+        tokenizer.pad_token_id = tokenizer.bos_token_id
         model.config.pad_token_id = tokenizer.pad_token_id
+        model.config.eos_token_id = tokenizer.eos_token_id
 
     return tokenizer
+
+def get_qwen_processor(pretrain, model, padding_side="left", strategy=None, use_fast=True):
+    processor = AutoProcessor.from_pretrained(pretrain)
+    processor.tokenizer.padding_side = padding_side
+    if processor.tokenizer.pad_token is None:
+        processor.tokenizer.pad_token = processor.tokenizer.bos_token
+        processor.tokenizer.pad_token_id = processor.tokenizer.bos_token_id
+        model.config.pad_token_id = processor.tokenizer.pad_token_id
+        model.config.eos_token_id = processor.tokenizer.eos_token_id
+    return processor
 
 
 def get_strategy(args):
@@ -90,7 +101,7 @@ def blending_datasets(
             train_data = data[train_split].select(range(min(max_count, len(data[train_split]))))
         else:
             train_data = data.select(range(min(max_count, len(data))))
-        train_data_list.append(train_data)
+        
 
         if return_eval:
             if eval_split and eval_split in data:
@@ -98,7 +109,13 @@ def blending_datasets(
             # train will contains eval? TODO
             else:
                 eval_data = train_data.select(range(min(max_count, int(len(train_data) * 0.03))))
+                train_data = train_data.select(range(min(max_count, int(len(train_data) * 0.03)), len(train_data)))
             eval_data_list.append(eval_data)
+        train_data_list.append(train_data)
+            
+            # # Remove eval_data from train_data by excluding its indices
+            # eval_indices = set(eval_data._indices)  # Assuming eval_data has an 'indices' attribute or method
+            # train_data = [item for idx, item in enumerate(train_data) if idx not in eval_indices]
 
     # merge datasets
     if strategy.is_rank_0():

@@ -26,7 +26,7 @@ def train(args):
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        target_modules=args.target_modules,
         ds_config=strategy.get_ds_train_config(is_actor=True),
         packing_samples=args.packing_samples,
     )
@@ -78,7 +78,6 @@ def train(args):
         input_template=args.input_template,
         is_dpo=True,
         multiple_of=args.ring_attn_size,
-        response_template=args.response_template,
     )
     eval_dataset = RewardDataset(
         eval_data,
@@ -88,7 +87,6 @@ def train(args):
         input_template=args.input_template,
         is_dpo=True,
         multiple_of=args.ring_attn_size,
-        response_template=args.response_template,
     )
 
     # prepare dataloader
@@ -146,7 +144,6 @@ def train(args):
         max_norm=args.max_norm,
         beta=args.beta,
         max_epochs=args.max_epochs,
-        mean_log_prob=args.mean_log_prob,
     )
 
     trainer.fit(args, consumed_samples, num_update_steps_per_epoch)
@@ -237,8 +234,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("--max_samples", type=int, default=1e8, help="Max number of samples")
     parser.add_argument("--max_len", type=int, default=512)
-    
-    
 
     # wandb parameters
     parser.add_argument("--use_wandb", type=str, default=None)
@@ -253,11 +248,6 @@ if __name__ == "__main__":
 
     # TensorBoard parameters
     parser.add_argument("--use_tensorboard", type=str, default=None, help="TensorBoard logging path")
-
-
-    # Yifei added arguments
-    parser.add_argument("--response_template", type=str, default=None)
-    parser.add_argument("--mean_log_prob", action="store_true", default=False)
 
     args = parser.parse_args()
 

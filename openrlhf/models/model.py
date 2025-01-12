@@ -16,6 +16,21 @@ from .utils import reset_position_ids
 
 logger = init_logger(__name__)
 
+def keep_last_one(tensor):
+    # Ensure the input is a 2D tensor
+    if tensor.dim() != 2:
+        raise ValueError("Input tensor must be 2-dimensional")
+    
+    # Iterate over each row
+    for i in range(tensor.size(0)):
+        # Find indices of 1s in the row
+        ones_indices = torch.where(tensor[i] == 1)[0]
+        
+        # If there are more than one 1s, zero out all but the last one
+        if len(ones_indices) > 1:
+            tensor[i, ones_indices[:-1]] = 0
+    
+    return tensor
 
 # Construct transformer with a value head for sequence classification.
 # https://github.com/huggingface/transformers/blob/405b56269812056d9593869e22b7b264d806cb1e/src/transformers/models/llama/modeling_llama.py#L1254
@@ -176,6 +191,7 @@ def _get_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="
             return_output=False,
             ring_attn_group=None,
             packed_seq_lens=None,
+            test=False,
         ) -> torch.Tensor:
             if not self.packing_samples:
                 # https://github.com/OpenRLHF/OpenRLHF/issues/217
@@ -206,8 +222,22 @@ def _get_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="
                 eos_indices = packed_seq_lens.cumsum(dim=0) - 1
                 reward = reward.squeeze(0).gather(dim=0, index=eos_indices)
             else:
-                eos_indices = attention_mask.size(1) - 1 - attention_mask.long().fliplr().argmax(dim=1, keepdim=True)
-                reward = values.gather(dim=1, index=eos_indices).squeeze(1)
+                # eos_indices = attention_mask.size(1) - 1 - attention_mask.long().fliplr().argmax(dim=1, keepdim=True)
+                # old_reward = values.gather(dim=1, index=eos_indices).squeeze(1)
+                
+                # new way of calculating reward
+                eos_indices = (input_ids == self.config.eos_token_id)
+                if test:
+                    eos_indices = keep_last_one(eos_indices)
+                    
+                # SUM EOS TOKENS
+                reward = (values * eos_indices.to(values.device)).sum(dim=1)
+                # reward = values.mean(dim=1) 
+                if test:
+                    reward = reward #/ attention_mask.sum(dim=1).to(values.device)
+                # reward = values.mean(dim=1)
+                
+                # assert reward.shape == old_reward.shape
 
             if not self.training and self.normalize_reward:
                 reward = (reward - self.mean) / self.std

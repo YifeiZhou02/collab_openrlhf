@@ -302,6 +302,8 @@ class DeepspeedStrategy(ABC):
 
         # save model weights for ZeRO2/3
         model_to_save = self._unwrap_model(model)
+        if isinstance(model_to_save, PeftModel):
+            model_to_save = model_to_save.merge_and_unload()
 
         # gather parameters
         output_state_dict = {}
@@ -314,6 +316,7 @@ class DeepspeedStrategy(ABC):
                     output_state_dict[k] = vv
 
         if self.is_rank_0():
+            
             state_dict = model_to_save.state_dict()
 
             # copy named_buffers with `persistent=True`
@@ -335,16 +338,17 @@ class DeepspeedStrategy(ABC):
             ), f"mismatch keys {output_state_dict_keys.symmetric_difference(state_dict_keys)}"
 
             # only save peft weights https://github.com/microsoft/DeepSpeed/issues/4295
-            if isinstance(model_to_save, PeftModel):
-                model_to_save.save_pretrained(output_dir, **kwargs)
-                if self.stage == 3:
-                    torch.save(
-                        get_peft_model_state_dict(model_to_save, output_state_dict),
-                        os.path.join(output_dir, "adapter_model.bin"),
-                    )
-            else:
+            # if isinstance(model_to_save, PeftModel):
+            #     # model_to_save = model_to_save.merge_and_unload()
+            #     model_to_save.save_pretrained(output_dir, **kwargs)
+            #     if self.stage == 3:
+            #         torch.save(
+            #             get_peft_model_state_dict(model_to_save, output_state_dict),
+            #             os.path.join(output_dir, "adapter_model.bin"),
+            #         )
+            # else:
                 # save model
-                model_to_save.save_pretrained(output_dir, state_dict=output_state_dict, **kwargs)
+            model_to_save.save_pretrained(output_dir, state_dict=output_state_dict, **kwargs)
 
             # save config
             output_config_file = os.path.join(output_dir, "config.json")

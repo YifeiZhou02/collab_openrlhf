@@ -42,6 +42,7 @@ class DPOTrainer(ABC):
         max_norm=0.5,
         beta=0.01,
         max_epochs: int = 2,
+        mean_log_prob: bool = False,
     ) -> None:
         super().__init__()
         self.strategy = strategy
@@ -55,6 +56,7 @@ class DPOTrainer(ABC):
         self.optimizer = optim
         self.tokenizer = tokenizer
         self.args = strategy.args
+        self.mean_log_prob = mean_log_prob
 
         self.beta = beta
         self.loss_fn = DPOLoss(self.beta, self.args.label_smoothing, self.args.ipo)
@@ -135,18 +137,20 @@ class DPOTrainer(ABC):
             # train
             for data in self.train_dataloader:
                 if not self.packing_samples:
-                    chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens = data
+                    chosen_ids, c_mask, reject_ids, r_mask, c_loss_mask, r_loss_mask, prompt_id_lens = data
                     chosen_ids = chosen_ids.squeeze(1).to(torch.cuda.current_device())
                     c_mask = c_mask.squeeze(1).to(torch.cuda.current_device())
+                    c_loss_mask = c_loss_mask.squeeze(1).to(torch.cuda.current_device())
                     reject_ids = reject_ids.squeeze(1).to(torch.cuda.current_device())
                     r_mask = r_mask.squeeze(1).to(torch.cuda.current_device())
+                    r_loss_mask = r_loss_mask.squeeze(1).to(torch.cuda.current_device())
 
                     chosen_logps, rejected_logps, aux_loss, nll_loss = self.concatenated_forward(
-                        self.model, chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens
+                        self.model, chosen_ids, c_mask, reject_ids, r_mask,  c_loss_mask, r_loss_mask ,prompt_id_lens,
                     )
                     with torch.no_grad():
                         reference_chosen_logps, reference_rejected_logps, _, _ = self.concatenated_forward(
-                            self.ref_model, chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens
+                            self.ref_model, chosen_ids, c_mask, reject_ids, r_mask, c_loss_mask, r_loss_mask, prompt_id_lens,
                         )
                 else:
                     packed_input_ids, packed_attention_masks, packed_seq_lens, prompt_id_lens = data
@@ -173,6 +177,7 @@ class DPOTrainer(ABC):
                     nll_loss = 0
 
                 loss = preference_loss + aux_loss * self.args.aux_loss_coef + nll_loss * self.args.nll_loss_coef
+                # loss = preference_loss * 0 + aux_loss * self.args.aux_loss_coef + 1 * self.args.nll_loss_coef
                 self.strategy.backward(loss, self.model, self.optimizer)
                 self.strategy.optimizer_step(self.optimizer, self.model, self.scheduler)
 
@@ -249,18 +254,20 @@ class DPOTrainer(ABC):
             times = 0
             for data in eval_dataloader:
                 if not self.packing_samples:
-                    chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens = data
+                    chosen_ids, c_mask, reject_ids, r_mask, c_loss_mask, r_loss_mask, prompt_id_lens = data
                     chosen_ids = chosen_ids.squeeze(1).to(torch.cuda.current_device())
                     c_mask = c_mask.squeeze(1).to(torch.cuda.current_device())
+                    c_loss_mask = c_loss_mask.squeeze(1).to(torch.cuda.current_device())
                     reject_ids = reject_ids.squeeze(1).to(torch.cuda.current_device())
                     r_mask = r_mask.squeeze(1).to(torch.cuda.current_device())
+                    r_loss_mask = r_loss_mask.squeeze(1).to(torch.cuda.current_device())
 
                     chosen_logps, rejected_logps, aux_loss, _ = self.concatenated_forward(
-                        self.model, chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens
+                        self.model, chosen_ids, c_mask, reject_ids, r_mask, c_loss_mask, r_loss_mask, prompt_id_lens
                     )
                     with torch.no_grad():
                         reference_chosen_logps, reference_rejected_logps, _, _ = self.concatenated_forward(
-                            self.ref_model, chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens
+                            self.ref_model, chosen_ids, c_mask, reject_ids, r_mask,  c_loss_mask, r_loss_mask, prompt_id_lens
                         )
                 else:
                     packed_input_ids, packed_attention_masks, packed_seq_lens, prompt_id_lens = data
@@ -299,25 +306,32 @@ class DPOTrainer(ABC):
                         self._tensorboard.add_scalar(f"eval/{k}", v, steps)
         self.model.train()  # reset model state
 
-    def concatenated_forward(self, model, chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens):
+    def concatenated_forward(self, model, chosen_ids, c_mask, reject_ids, r_mask,  c_loss_mask, r_loss_mask, prompt_id_lens):
         """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
         We do this to avoid doing two forward passes, because it's faster for FSDP.
         """
-        input_ids, att_masks, prompt_id_lens = self.concatenated_inputs(
-            chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens
+        input_ids, att_masks, loss_mask, prompt_id_lens = self.concatenated_inputs(
+            chosen_ids, c_mask, reject_ids, r_mask, c_loss_mask, r_loss_mask, prompt_id_lens
         )
         output = model(input_ids, attention_mask=att_masks, return_output=True)
         all_logits = output["logits"]
         all_logps_sum, all_logps_mean = self._get_batch_logps(
-            all_logits, input_ids, att_masks, prompt_id_lens, average_log_prob=False
+            all_logits, input_ids, att_masks, loss_mask,
+            prompt_id_lens, 
+            average_log_prob=False
         )
-        chosen_logps = all_logps_sum[: chosen_ids.shape[0]]
-        rejected_logps = all_logps_sum[chosen_ids.shape[0] :]
+        if self.mean_log_prob:
+            # modified to use the mean
+            chosen_logps = all_logps_sum[: chosen_ids.shape[0]]/loss_mask.sum(-1)[:chosen_ids.shape[0]]
+            rejected_logps = all_logps_sum[chosen_ids.shape[0] :]/loss_mask.sum(-1)[chosen_ids.shape[0]:]
+        else:
+            chosen_logps = all_logps_sum[: chosen_ids.shape[0]]
+            rejected_logps = all_logps_sum[chosen_ids.shape[0]]
         aux_loss = output.aux_loss if "aux_loss" in output else []
         return chosen_logps, rejected_logps, aux_loss, -all_logps_mean[: chosen_ids.shape[0]].mean()
 
-    def concatenated_inputs(self, chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens):
+    def concatenated_inputs(self, chosen_ids, c_mask, reject_ids, r_mask,  c_loss_mask, r_loss_mask, prompt_id_lens,):
         """Concatenate the chosen and rejected inputs into a single tensor.
 
         Args:
@@ -347,13 +361,15 @@ class DPOTrainer(ABC):
         )
         max_length = max(c_mask.shape[1], r_mask.shape[1])
         att_masks = torch.cat((pad_to_length(c_mask, max_length, 0), pad_to_length(r_mask, max_length, 0)), dim=0)
-        return inputs_ids, att_masks, prompt_id_lens * 2
+        loss_masks = torch.cat((pad_to_length(c_loss_mask, max_length, 0), pad_to_length(r_loss_mask, max_length, 0)), dim=0)
+        return inputs_ids, att_masks, loss_masks, prompt_id_lens * 2
 
     def _get_batch_logps(
         self,
         logits: torch.FloatTensor,
         labels: torch.LongTensor,
         attention_mask,
+        loss_mask,
         prompt_id_lens,
         average_log_prob: bool = False,
     ) -> torch.FloatTensor:
@@ -373,7 +389,8 @@ class DPOTrainer(ABC):
         labels = labels[:, 1:].clone()
         logits = logits[:, :-1, :]
 
-        loss_masks = attention_mask.clone().bool()
+        loss_masks = loss_mask.clone().bool()
+        # loss_masks = attention_mask.clone().bool()
         # mask prompts
         for mask, source_len in zip(loss_masks, prompt_id_lens):
             mask[:source_len] = False
