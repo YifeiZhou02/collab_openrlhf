@@ -1,6 +1,7 @@
 from typing import Callable
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from .utils import zero_pad_sequences
@@ -9,8 +10,15 @@ from .utils import zero_pad_sequences
 def preprocess_data(data, input_template=None, input_key="input", output_key=None, apply_chat_template=None):
     if apply_chat_template:
         if output_key:
-            prompt = apply_chat_template(data[input_key], tokenize=False, add_generation_prompt=True)
-            response = apply_chat_template(data[input_key] + data[output_key], tokenize=False)[len(prompt) :]
+            prompt_message = data[input_key]
+            response_message = data[output_key]
+
+            if isinstance(prompt_message, str) and isinstance(response_message, str):
+                prompt_message = [{"role": "user", "content": prompt_message}]
+                response_message = [{"role": "assistant", "content": response_message}]
+
+            prompt = apply_chat_template(prompt_message, tokenize=False, add_generation_prompt=True)
+            response = apply_chat_template(prompt_message + response_message, tokenize=False)[len(prompt) :]
         else:
             prompt = apply_chat_template(data[input_key][:-1], tokenize=False, add_generation_prompt=True)
             response = apply_chat_template(data[input_key], tokenize=False)[len(prompt) :]
@@ -42,12 +50,14 @@ class SFTDataset(Dataset):
         input_template=None,
         pretrain_mode=False,
         num_processors=8,  # Specify the number of processors you want to use
+        multiple_of=1,
     ) -> None:
         super().__init__()
         self.tokenizer = tokenizer
         self.strategy = strategy
         self.pretrain_mode = pretrain_mode
         self.max_length = max_length
+        self.multiple_of = multiple_of
 
         # chat template
         self.input_template = input_template
@@ -158,12 +168,19 @@ class SFTDataset(Dataset):
         index = 1
         for prompt_ids_len, input_id, attention_mask, info in item_list:
             packed_input_ids.append(input_id.flatten())
-            packed_attention_masks.append(torch.ones_like(input_id.flatten()) * index)
+            packed_attention_masks.append(torch.full_like(input_id.flatten(), index))
             prompt_ids_lens.append(prompt_ids_len)
             infos["input_length"].append(info["input_length"])
             index += 1
 
         packed_input_ids = torch.cat(packed_input_ids, dim=0).unsqueeze(0)
         packed_attention_masks = torch.cat(packed_attention_masks, dim=0).unsqueeze(0)
+
+        if (
+            self.multiple_of > 1 and packed_input_ids.numel() % self.multiple_of != 0
+        ):  # not divisible by multiple_of; here we align for grouping
+            padding_len = self.multiple_of - (packed_input_ids.numel() % self.multiple_of)
+            packed_input_ids = F.pad(packed_input_ids, (0, padding_len), value=self.tokenizer.pad_token_id)
+            packed_attention_masks = F.pad(packed_attention_masks, (0, padding_len), value=0)
 
         return prompt_ids_lens, packed_input_ids, packed_attention_masks, infos

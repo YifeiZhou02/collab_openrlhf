@@ -26,19 +26,21 @@ def _validate_args(args):
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
     assert (
-        actor_world_size & (actor_world_size - 1)
-    ) == 0, f"actor_world_size must be power of 2, got {actor_world_size}"
+        args.rollout_batch_size % actor_world_size == 0
+    ), f"rollout_bach_size must be divisible by actor_world_size, got {args.rollout_batch_size} and {actor_world_size}"
+
+    assert args.zero_stage != 3 or args.vllm_num_engines > 0, f"ZeRO-3 is only supported when vLLM enabled"
+
+    if args.vllm_num_engines > 0:
+        assert (
+            actor_world_size % args.vllm_num_engines == 0
+        ), f"actor_world_size must be divisible by vllm_num_engines, got {actor_world_size} and {args.vllm_num_engines}"
 
     if args.critic_pretrain:
         critic_world_size = args.critic_num_nodes * args.critic_num_gpus_per_node
         assert (
-            critic_world_size & (critic_world_size - 1)
-        ) == 0, f"critic_world_size must be power of 2, got {critic_world_size}"
-        assert (
             actor_world_size % critic_world_size == 0
         ), f"actor_world_size must be divisible by critic_world_size, got {actor_world_size} and {critic_world_size}"
-
-    assert args.zero_stage != 3 or args.vllm_num_engines > 0, f"ZeRO-3 is only supported when vLLM enabled"
 
 
 def train(args):
@@ -210,7 +212,7 @@ if __name__ == "__main__":
         default=1,
         help="tensor parallel size of vLLM Engine for multi-GPU inference",
     )
-    parser.add_argument("--vllm_sync_backend", type=str, default="gloo", help="DeepSpeed -> vLLM weight sync backend")
+    parser.add_argument("--vllm_sync_backend", type=str, default="nccl", help="DeepSpeed -> vLLM weight sync backend")
     parser.add_argument("--enable_prefix_caching", action="store_true", default=False)
     parser.add_argument("--enforce_eager", action="store_true", default=False, help="Disable CUDA graph in vLLM")
 
@@ -235,7 +237,7 @@ if __name__ == "__main__":
     parser.add_argument("--actor_init_on_gpu", action="store_true", default=False)
     parser.add_argument("--flash_attn", action="store_true", default=False, help="Enable FlashAttention2")
     parser.add_argument("--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type")
-    parser.add_argument("--disable_trace_cache", action="store_true", default=False)
+    parser.add_argument("--overlap_comm", action="store_true", default=False)
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true", default=False)
     parser.add_argument("--disable_fast_tokenizer", action="store_true", default=False)
 

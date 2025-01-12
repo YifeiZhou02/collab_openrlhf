@@ -62,6 +62,7 @@ def train(args):
         strategy,
         pretrain_mode=args.pretrain_mode,
         input_template=args.input_template,
+        multiple_of=args.ring_attn_size,
     )
     eval_dataset = SFTDataset(
         eval_data,
@@ -70,6 +71,7 @@ def train(args):
         strategy,
         pretrain_mode=args.pretrain_mode,
         input_template=args.input_template,
+        multiple_of=args.ring_attn_size,
     )
 
     # prepare dataloader
@@ -158,7 +160,7 @@ if __name__ == "__main__":
     parser.add_argument("--adam_offload", action="store_true", default=False, help="Offload Adam Optimizer")
     parser.add_argument("--flash_attn", action="store_true", default=False, help="Enable FlashAttention2")
     parser.add_argument("--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type")
-    parser.add_argument("--disable_trace_cache", action="store_true", default=False)
+    parser.add_argument("--overlap_comm", action="store_true", default=False)
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true", default=False)
     parser.add_argument("--disable_fast_tokenizer", action="store_true", default=False)
 
@@ -172,6 +174,17 @@ if __name__ == "__main__":
     parser.add_argument("--lr_scheduler", type=str, default="cosine_with_min_lr")
     parser.add_argument("--l2", type=float, default=0, help="weight decay loss")
     parser.add_argument("--adam_betas", type=float, nargs=2, default=(0.9, 0.95), help="Betas for Adam optimizer")
+
+    # ring-attention
+    parser.add_argument("--ring_attn_size", type=int, default=1, help="Ring attention group size")
+    parser.add_argument(
+        "--ring_head_stride",
+        type=int,
+        default=1,
+        help="the number of heads to do ring attention each time. "
+        "It should be a divisor of the number of heads. "
+        "A larger value may results in faster training but will consume more memory.",
+    )
 
     # LoRA
     parser.add_argument("--load_in_4bit", action="store_true", default=False)
@@ -228,5 +241,9 @@ if __name__ == "__main__":
     if args.packing_samples and not args.flash_attn:
         print("[Warning] Please --flash_attn to accelerate when --packing_samples is enabled.")
         args.flash_attn = True
+
+    # TODO: [packing samples]
+    if args.ring_attn_size > 1:
+        assert args.packing_samples, "packing_samples must be enabled when using ring attention"
 
     train(args)
