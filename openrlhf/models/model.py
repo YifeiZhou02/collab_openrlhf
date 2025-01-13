@@ -91,12 +91,19 @@ def get_llm_for_sequence_regression(
 
     base_class = AutoModel._model_mapping[type(config)]
     base_pretrained_class = base_class.__base__
-    if "qwen2vl" in type(config).__name__.lower():
-        import transformers
-        base_class = transformers.models.qwen2_vl.modeling_qwen2_vl.Qwen2VLForConditionalGeneration
-        base_pretrained_class = base_class.__base__
+    
+    # if "llama" in type(config).__name__.lower():
+    #     import transformers
+    #     base_class = transformers.models.llama.modeling_llama.LlamaForCausalLM
+    #     base_pretrained_class = base_class
     if model_type == "reward":
-        cls_class = _get_reward_model(base_pretrained_class, base_class, value_head_prefix, packing_samples)
+        if "qwen2vl" in type(config).__name__.lower():
+            import transformers
+            base_class = transformers.models.qwen2_vl.modeling_qwen2_vl.Qwen2VLForConditionalGeneration
+            base_pretrained_class = base_class
+            cls_class = _get_qwen_reward_model(base_pretrained_class, base_class, value_head_prefix, packing_samples)
+        else:
+            cls_class = _get_reward_model(base_pretrained_class, base_class, value_head_prefix, packing_samples)
     else:
         cls_class = _get_critic_model(base_pretrained_class, base_class, value_head_prefix, packing_samples)
 
@@ -127,6 +134,7 @@ def get_llm_for_sequence_regression(
         device_map=device_map,
         **kwargs,
     )
+    model.train()
 
     # LoRA
     if lora_rank > 0:
@@ -182,6 +190,8 @@ def _get_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="
         def __init__(self, config: AutoConfig):
             super().__init__(config)
             setattr(self, self.base_model_prefix, base_llm_model(config))
+            # if hasattr(self, "model") and hasattr(self.model, "model"):
+                
 
             self.value_head_prefix = value_head_prefix
             setattr(self, value_head_prefix, nn.Linear(config.hidden_size, 1, bias=False))
@@ -227,12 +237,16 @@ def _get_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="
                 outputs = getattr(self, self.base_model_prefix)(
                     input_ids, pixel_values=pixel_values, image_grid_thw=image_thw, attention_mask=attention_mask, position_ids=position_ids, output_hidden_states=True
                 )
-                last_hidden_states = outputs["hidden_states"][-1]
+                # last_hidden_states = outputs["hidden_states"][-1]
             else:
                 outputs = getattr(self, self.base_model_prefix)(
-                    input_ids, attention_mask=attention_mask, position_ids=position_ids
+                    input_ids, attention_mask=attention_mask, position_ids=position_ids, output_hidden_states=True
                 )
-                last_hidden_states = outputs["last_hidden_state"]
+            # last_hidden_states = outputs["last_hidden_state"]
+            # if hasattr(outputs, "last_hidden_state"):
+            #     last_hidden_states = outputs["last_hidden_state"]
+            # else:
+            last_hidden_states = outputs["hidden_states"][-1]
             values = getattr(self, self.value_head_prefix)(last_hidden_states).squeeze(-1)
 
             if self.packing_samples:
@@ -245,8 +259,8 @@ def _get_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="
                 eos_indices = packed_seq_lens.cumsum(dim=0) - 1
                 reward = reward.squeeze(0).gather(dim=0, index=eos_indices)
             else:
-                eos_indices = attention_mask.size(1) - 1 - attention_mask.long().fliplr().argmax(dim=1, keepdim=True)
-                old_reward = values.gather(dim=1, index=eos_indices).squeeze(1)
+                # eos_indices = attention_mask.size(1) - 1 - attention_mask.long().fliplr().argmax(dim=1, keepdim=True)
+                # old_reward = values.gather(dim=1, index=eos_indices).squeeze(1)
                 
                 # new way of calculating reward
                 # eos_indices = (input_ids == self.config.eos_token_id)
@@ -258,7 +272,7 @@ def _get_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="
                 reward = values.mean(dim=1) 
                 # reward = values.mean(dim=1)
                 
-                reward = old_reward
+                # reward = old_reward
                 # assert reward.shape == old_reward.shape
 
             if not self.training and self.normalize_reward:
@@ -342,3 +356,138 @@ def _get_critic_model(base_pretrained_model, base_llm_model, value_head_prefix="
                 return action_values
 
     return CriticModel
+
+from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModel, Qwen2VisionTransformerPretrainedModel, Qwen2VLPreTrainedModel
+def _get_qwen_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="score", packing_samples=False):
+    class RewardModel(Qwen2VLPreTrainedModel):
+        supports_gradient_checkpointing = True
+
+        def __init__(self, config: AutoConfig):
+            super().__init__(config)
+            # self.generation_model = base_llm_model(config)
+            # self.model = self.generation_model.model
+            # setattr(self, self.base_model_prefix, base_llm_model(config))
+            # if hasattr(self, "model") and hasattr(self.model, "model"):
+            self.visual = Qwen2VisionTransformerPretrainedModel._from_config(config.vision_config)
+            self.model = Qwen2VLModel(config)
+            self.vocab_size = config.vocab_size
+
+            self.value_head_prefix = value_head_prefix
+            setattr(self, value_head_prefix, nn.Linear(config.hidden_size, 1, bias=False))
+
+            self.packing_samples = packing_samples
+
+            # mean std
+            self.normalize_reward = config.normalize_reward
+            self.register_buffer("mean", torch.zeros(1), persistent=False)
+            self.register_buffer("std", torch.ones(1), persistent=False)
+
+            # load mean/std from config.json
+            if hasattr(config, "mean"):
+                self.mean[0] = config.mean
+                self.std[0] = config.std
+                
+            # Initialize weights and apply final processing
+            self.post_init()
+            
+        def forward(
+            self,
+            input_ids: torch.LongTensor = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            return_output=False,
+            pixel_values=None,
+            image_thw=None,
+            ring_attn_group=None,
+            packed_seq_lens=None,
+            test=False,
+        ) -> torch.Tensor:
+            if not self.packing_samples:
+                # https://github.com/OpenRLHF/OpenRLHF/issues/217
+                position_ids = attention_mask.long().cumsum(-1) - 1
+                position_ids.masked_fill_(attention_mask == 0, 1)
+            else:
+                # convert attention_mask to position_ids
+                if ring_attn_group is not None:
+                    input_ids, attention_mask, position_ids = convert_ring_attn_params(
+                        input_ids, attention_mask, packed_seq_lens, ring_attn_group
+                    )
+                else:
+                    position_ids = reset_position_ids(attention_mask)
+                # explicitly ignore attention_mask for packing_samples
+                attention_mask = None
+            # if pixel_values is not None:
+            #     outputs = getattr(self, "generation_model")(
+            #         input_ids, pixel_values=pixel_values, image_grid_thw=image_thw, attention_mask=attention_mask, position_ids=position_ids, output_hidden_states=True
+            #     )
+            #     # last_hidden_states = outputs["hidden_states"][-1]
+            # else:
+            #     outputs = getattr(self, "generation_model")(
+            #         input_ids, attention_mask=attention_mask, position_ids=position_ids, output_hidden_states=True
+            #     )
+            
+            inputs_embeds = self.model.embed_tokens(input_ids)
+            if pixel_values is not None:
+                pixel_values = pixel_values.type(self.visual.get_dtype())
+                image_embeds = self.visual(pixel_values, grid_thw=image_thw)
+                n_image_tokens = (input_ids == self.config.image_token_id).sum().item()
+                n_image_features = image_embeds.shape[0]
+                if n_image_tokens != n_image_features:
+                    raise ValueError(
+                        f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
+                    )
+                image_mask = (
+                    (input_ids == self.config.image_token_id)
+                    .unsqueeze(-1)
+                    .expand_as(inputs_embeds)
+                    .to(inputs_embeds.device)
+                )
+                image_embeds = image_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
+                inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+
+            outputs = self.model(
+                        input_ids=None,
+                        position_ids=position_ids,
+                        attention_mask=attention_mask,
+                        inputs_embeds=inputs_embeds,
+                    )
+            last_hidden_states = outputs[0]
+            
+            # last_hidden_states = outputs["last_hidden_state"]
+            # if hasattr(outputs, "last_hidden_state"):
+            #     last_hidden_states = outputs["last_hidden_state"]
+            # else:
+            # last_hidden_states = outputs["hidden_states"][-1]
+            values = getattr(self, self.value_head_prefix)(last_hidden_states).squeeze(-1)
+
+            if self.packing_samples:
+                if ring_attn_group is not None:
+                    reward = all_gather(values, ring_attn_group).reshape(1, -1)
+                else:
+                    reward = values
+                # TODO: convert packed_seq_lens into torch tensor in advance
+                packed_seq_lens = torch.tensor(packed_seq_lens, device=values.device)
+                eos_indices = packed_seq_lens.cumsum(dim=0) - 1
+                reward = reward.squeeze(0).gather(dim=0, index=eos_indices)
+            else:
+                # eos_indices = attention_mask.size(1) - 1 - attention_mask.long().fliplr().argmax(dim=1, keepdim=True)
+                # old_reward = values.gather(dim=1, index=eos_indices).squeeze(1)
+                
+                # new way of calculating reward
+                # eos_indices = (input_ids == self.config.eos_token_id)
+                # if test:
+                #     eos_indices = keep_last_one(eos_indices)
+                    
+                # SUM EOS TOKENS
+                # reward = (values * eos_indices.to(values.device)).sum(dim=1)
+                reward = values.mean(dim=1) 
+                # reward = values.mean(dim=1)
+                
+                # reward = old_reward
+                # assert reward.shape == old_reward.shape
+
+            if not self.training and self.normalize_reward:
+                reward = (reward - self.mean) / self.std
+
+            return (reward, outputs) if return_output else reward
+
+    return RewardModel

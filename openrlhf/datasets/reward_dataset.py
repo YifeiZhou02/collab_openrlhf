@@ -377,7 +377,7 @@ class QwenRewardDataset(Dataset):
             "prompt": prompt,
             "chosen": chosen,
             "reject": reject,
-            "extra": 0,
+            "extra": prompt_ids_len if self.is_dpo else margin,
         }
 
     def __len__(self):
@@ -494,6 +494,13 @@ class QwenRewardDataset(Dataset):
             reject_pixel_values.append(rejected_pixel_value)
             chosen_image_thw_list.append(chosen_image_thw)
             reject_image_thw_list.append(reject_image_thw)
+        # for chosen_id, chosen_mask, reject_id, rejects_mask, _, _, extra in item_list:
+        #     chosen_ids.append(chosen_id)
+        #     chosen_masks.append(chosen_mask)
+        #     reject_ids.append(reject_id)
+        #     rejects_masks.append(rejects_mask)
+        #     extras.append(extra)
+
 
         if self.is_dpo:
             padding_side = "right"
@@ -508,6 +515,8 @@ class QwenRewardDataset(Dataset):
         chosen_image_thw = torch.concatenate(chosen_image_thw_list, dim=0)
         reject_image_thw = torch.concatenate(reject_image_thw_list, dim=0)
         
+        # return chosen_ids, chosen_masks, reject_ids, rejects_masks, chosen_masks, rejects_masks, extras
+
         return chosen_ids, chosen_masks, reject_ids, rejects_masks, chosen_pixel_values, reject_pixel_values, chosen_image_thw, reject_image_thw, extras
         
         # chosen_loss_masks = zero_pad_sequences(chosen_loss_masks, side=padding_side)
