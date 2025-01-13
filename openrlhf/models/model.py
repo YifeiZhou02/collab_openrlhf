@@ -91,6 +91,10 @@ def get_llm_for_sequence_regression(
 
     base_class = AutoModel._model_mapping[type(config)]
     base_pretrained_class = base_class.__base__
+    if "qwen2vl" in type(config).__name__.lower():
+        import transformers
+        base_class = transformers.models.qwen2_vl.modeling_qwen2_vl.Qwen2VLForConditionalGeneration
+        base_pretrained_class = base_class.__base__
     if model_type == "reward":
         cls_class = _get_reward_model(base_pretrained_class, base_class, value_head_prefix, packing_samples)
     else:
@@ -199,6 +203,8 @@ def _get_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="
             input_ids: torch.LongTensor = None,
             attention_mask: Optional[torch.Tensor] = None,
             return_output=False,
+            pixel_values=None,
+            image_thw=None,
             ring_attn_group=None,
             packed_seq_lens=None,
             test=False,
@@ -217,11 +223,16 @@ def _get_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="
                     position_ids = reset_position_ids(attention_mask)
                 # explicitly ignore attention_mask for packing_samples
                 attention_mask = None
-
-            outputs = getattr(self, self.base_model_prefix)(
-                input_ids, attention_mask=attention_mask, position_ids=position_ids
-            )
-            last_hidden_states = outputs["last_hidden_state"]
+            if pixel_values is not None:
+                outputs = getattr(self, self.base_model_prefix)(
+                    input_ids, pixel_values=pixel_values, image_grid_thw=image_thw, attention_mask=attention_mask, position_ids=position_ids, output_hidden_states=True
+                )
+                last_hidden_states = outputs["hidden_states"][-1]
+            else:
+                outputs = getattr(self, self.base_model_prefix)(
+                    input_ids, attention_mask=attention_mask, position_ids=position_ids
+                )
+                last_hidden_states = outputs["last_hidden_state"]
             values = getattr(self, self.value_head_prefix)(last_hidden_states).squeeze(-1)
 
             if self.packing_samples:
@@ -234,21 +245,20 @@ def _get_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="
                 eos_indices = packed_seq_lens.cumsum(dim=0) - 1
                 reward = reward.squeeze(0).gather(dim=0, index=eos_indices)
             else:
-                # eos_indices = attention_mask.size(1) - 1 - attention_mask.long().fliplr().argmax(dim=1, keepdim=True)
-                # old_reward = values.gather(dim=1, index=eos_indices).squeeze(1)
+                eos_indices = attention_mask.size(1) - 1 - attention_mask.long().fliplr().argmax(dim=1, keepdim=True)
+                old_reward = values.gather(dim=1, index=eos_indices).squeeze(1)
                 
                 # new way of calculating reward
-                eos_indices = (input_ids == self.config.eos_token_id)
-                if test:
-                    eos_indices = keep_last_one(eos_indices)
+                # eos_indices = (input_ids == self.config.eos_token_id)
+                # if test:
+                #     eos_indices = keep_last_one(eos_indices)
                     
                 # SUM EOS TOKENS
-                reward = (values * eos_indices.to(values.device)).sum(dim=1)
-                # reward = values.mean(dim=1) 
-                if test:
-                    reward = reward #/ attention_mask.sum(dim=1).to(values.device)
+                # reward = (values * eos_indices.to(values.device)).sum(dim=1)
+                reward = values.mean(dim=1) 
                 # reward = values.mean(dim=1)
                 
+                reward = old_reward
                 # assert reward.shape == old_reward.shape
 
             if not self.training and self.normalize_reward:

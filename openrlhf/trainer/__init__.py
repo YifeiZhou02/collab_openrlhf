@@ -4,6 +4,7 @@ from .kto_trainer import KTOTrainer
 from .ppo_trainer import PPOTrainer
 from .prm_trainer import ProcessRewardModelTrainer
 from .rm_trainer import RewardModelTrainer
+from .qwen_rm_trainer import QwenRewardModelTrainer
 from .sft_trainer import SFTTrainer
 
 __all__ = [

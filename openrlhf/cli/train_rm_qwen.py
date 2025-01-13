@@ -7,7 +7,7 @@ from transformers.trainer import get_scheduler
 
 from openrlhf.datasets import RewardDataset, QwenRewardDataset
 from openrlhf.models import get_llm_for_sequence_regression
-from openrlhf.trainer import RewardModelTrainer
+from openrlhf.trainer import RewardModelTrainer, QwenRewardModelTrainer
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer, get_qwen_processor
 
 
@@ -26,7 +26,7 @@ def train(args):
         load_in_4bit=args.load_in_4bit,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
-        target_modules=args.target_modules,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
         lora_dropout=args.lora_dropout,
         ds_config=strategy.get_ds_train_config(is_actor=False),
         init_value_head=True,
@@ -120,7 +120,7 @@ def train(args):
 
     # batch_size here is micro_batch_size * 2
     # we use merged chosen + rejected response forward
-    trainer = RewardModelTrainer(
+    trainer = QwenRewardModelTrainer(
         model=model,
         strategy=strategy,
         optim=optim,

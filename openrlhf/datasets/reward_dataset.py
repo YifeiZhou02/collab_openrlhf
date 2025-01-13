@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from .utils import exist_and_not_none, zero_pad_sequences
+from qwen_vl_utils import process_vision_info
 
 
 def preprocess_data(
@@ -386,12 +387,32 @@ class QwenRewardDataset(Dataset):
     def __getitem__(self, idx):
         prompt, chosen, reject, extra = self.prompts[idx], self.chosens[idx], self.rejects[idx], self.extras[idx]
 
-        chosen = (prompt + chosen).rstrip("\n")
-        if not chosen.endswith(self.tokenizer.eos_token):
-            chosen += " " + self.tokenizer.eos_token
+        # Remove automatically added None entries
+        for d in chosen:
+            for m in d["content"]:
+                if m["type"] == "image":
+                    if "text" in m and m["text"] is None:
+                        del m["text"]
+                    assert m["image"] is not None, f"Image is None: {m}"
+                if "image" in m and m["image"] is None and m["type"] == "text":
+                    del m["image"]
+        for d in reject:
+            for m in d["content"]:
+                if m["type"] == "image":
+                    if "text" in m and m["text"] is None:
+                        del m["text"]
+                    assert m["image"] is not None, f"Image is None: {m}"
+                if "image" in m and m["image"] is None and m["type"] == "text":
+                    del m["image"]                
+
+        chosen_text = self.processor.apply_chat_template(
+        chosen, tokenize=False, add_generation_prompt=False
+        )
+                        
+        chosen_image_inputs, _ = process_vision_info(chosen)
         chosen_token = self.processor(
-            text=chosen,
-            images=None,
+            text=chosen_text,
+            images=chosen_image_inputs, 
             max_length=self.max_length,
             padding=False,
             truncation=True,
@@ -407,9 +428,9 @@ class QwenRewardDataset(Dataset):
         #     add_special_tokens=False,
         # )
 
-        reject = (prompt + reject).rstrip("\n")
-        if not reject.endswith(self.tokenizer.eos_token):
-            reject += " " + self.tokenizer.eos_token
+        # reject = (prompt + reject).rstrip("\n")
+        # if not reject.endswith(self.tokenizer.eos_token):
+        #     reject += " " + self.tokenizer.eos_token
         # reject_token = self.tokenizer(
         #     reject,
         #     max_length=self.max_length,
@@ -418,9 +439,14 @@ class QwenRewardDataset(Dataset):
         #     return_tensors="pt",
         #     add_special_tokens=False,
         # )
+        reject_text = self.processor.apply_chat_template(
+            reject, tokenize=False, add_generation_prompt=False
+        )
+        reject_image_inputs, _ = process_vision_info(reject)
+        
         reject_token = self.processor(
-            text=reject,
-            images=None,
+            text=reject_text,
+            images=reject_image_inputs,
             max_length=self.max_length,
             padding=False,
             truncation=True,
@@ -435,55 +461,16 @@ class QwenRewardDataset(Dataset):
         chosen_token["attention_mask"][0][-1] = True
         reject_token["attention_mask"][0][-1] = True
         
-        chosen_loss_mask = torch.zeros_like(chosen_token["input_ids"])
-        reject_loss_mask = torch.zeros_like(reject_token["input_ids"])
-        if self.response_template is not None:
-            response_tokens = self.tokenizer(self.response_template, return_tensors="pt", add_special_tokens=False)["input_ids"].flatten()
-            for i in range(len(chosen_token["input_ids"])):
-                for id in torch.where(chosen_token["input_ids"][i].flatten() == response_tokens[0])[0]:
-                    # print("chosen_tokens", chosen_token["input_ids"][i][id:id+len(response_tokens)].flatten() )
-                    # print("response_tokens", response_tokens)
-                    # print("chosen_tokens == response_tokens", chosen_token["input_ids"][i][id:id+len(response_tokens)].flatten() == response_tokens)
-                    if torch.all(chosen_token["input_ids"][i][id:id+len(response_tokens)].flatten() == response_tokens):
-                        start_id = id + len(response_tokens)
-                        # print("found a match")
-                    else:
-                        continue
-                    # end_id = None
-                    for j in range(start_id, len(chosen_token["input_ids"][i])):
-                        if chosen_token["input_ids"][i][j] == self.tokenizer.eos_token_id:
-                            end_id = j
-                            break
-                    chosen_loss_mask[i][start_id:end_id+1] = 1
             
-            for i in range(len(reject_token["input_ids"])):
-                for id in torch.where(reject_token["input_ids"][i].flatten()  == response_tokens[0])[0]:
-                    if torch.all(reject_token["input_ids"][i][id:id+len(response_tokens)].flatten() == response_tokens):
-                        start_id = id + len(response_tokens)
-                    else:
-                        continue
-                    end_id = None
-                    for j in range(start_id, len(reject_token["input_ids"][i])):
-                        if reject_token["input_ids"][i][j] == self.tokenizer.eos_token_id:
-                            end_id = j
-                            break
-                    reject_loss_mask[i][start_id:end_id+1] = 1
-                        
-            # print(f"Fraction of tokens masked: {chosen_loss_mask.sum().item() / chosen_loss_mask.numel()}")
-            # print(f"Fraction of tokens masked: {reject_loss_mask.sum().item() / reject_loss_mask.numel()}")
-        else:
-            chosen_loss_mask = chosen_token["attention_mask"]
-            reject_loss_mask = reject_token["attention_mask"]
-            
-            
-
         return (
             chosen_token["input_ids"],
             chosen_token["attention_mask"],
             reject_token["input_ids"],
             reject_token["attention_mask"],
-            chosen_loss_mask,
-            reject_loss_mask,
+            chosen_token["pixel_values"],
+            reject_token["pixel_values"],
+            chosen_token["image_grid_thw"],
+            reject_token["image_grid_thw"],
             extra,
         )
 
@@ -493,16 +480,20 @@ class QwenRewardDataset(Dataset):
         reject_ids = []
         rejects_masks = []
         extras = []
-        chosen_loss_masks = []
-        reject_loss_masks = []
-        for chosen_id, chosen_mask, reject_id, rejects_mask, chosen_loss_mask, rejected_loss_mask,  extra in item_list:
+        chosen_pixel_values = []
+        reject_pixel_values = []
+        chosen_image_thw_list = []
+        reject_image_thw_list = []
+        for chosen_id, chosen_mask, reject_id, rejects_mask, chosen_pixel_value, rejected_pixel_value,  chosen_image_thw, reject_image_thw, extra in item_list:
             chosen_ids.append(chosen_id)
             chosen_masks.append(chosen_mask)
             reject_ids.append(reject_id)
             rejects_masks.append(rejects_mask)
             extras.append(extra)
-            chosen_loss_masks.append(chosen_loss_mask)
-            reject_loss_masks.append(rejected_loss_mask)
+            chosen_pixel_values.append(chosen_pixel_value)
+            reject_pixel_values.append(rejected_pixel_value)
+            chosen_image_thw_list.append(chosen_image_thw)
+            reject_image_thw_list.append(reject_image_thw)
 
         if self.is_dpo:
             padding_side = "right"
@@ -512,9 +503,16 @@ class QwenRewardDataset(Dataset):
         chosen_masks = zero_pad_sequences(chosen_masks, side=padding_side)
         reject_ids = zero_pad_sequences(reject_ids, side=padding_side, value=self.tokenizer.pad_token_id)
         rejects_masks = zero_pad_sequences(rejects_masks, side=padding_side)
-        chosen_loss_masks = zero_pad_sequences(chosen_loss_masks, side=padding_side)
-        reject_loss_masks = zero_pad_sequences(reject_loss_masks, side=padding_side)
-        return chosen_ids, chosen_masks, reject_ids, rejects_masks, chosen_loss_masks, rejected_loss_mask, extras
+        chosen_pixel_values = torch.concatenate(chosen_pixel_values, dim=0)
+        reject_pixel_values = torch.concatenate(reject_pixel_values, dim=0)
+        chosen_image_thw = torch.concatenate(chosen_image_thw_list, dim=0)
+        reject_image_thw = torch.concatenate(reject_image_thw_list, dim=0)
+        
+        return chosen_ids, chosen_masks, reject_ids, rejects_masks, chosen_pixel_values, reject_pixel_values, chosen_image_thw, reject_image_thw, extras
+        
+        # chosen_loss_masks = zero_pad_sequences(chosen_loss_masks, side=padding_side)
+        # reject_loss_masks = zero_pad_sequences(reject_loss_masks, side=padding_side)
+        # return chosen_ids, chosen_masks, reject_ids, rejects_masks, chosen_loss_masks, rejected_loss_mask, extras
 
     def packing_collate_fn(self, item_list):
         extras = []
