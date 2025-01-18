@@ -2,8 +2,8 @@ import os
 
 from datasets import interleave_datasets, load_dataset, load_from_disk
 from transformers import AutoTokenizer, AutoProcessor
-min_pixels = 32*28*28
-max_pixels = 128*28*28 
+min_pixels = 64*28*28
+max_pixels = 256*28*28 
 
 
 def get_tokenizer(pretrain, model, padding_side="left", strategy=None, use_fast=True):
@@ -13,7 +13,7 @@ def get_tokenizer(pretrain, model, padding_side="left", strategy=None, use_fast=
     # https://github.com/facebookresearch/llama-recipes/pull/196
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.bos_token
-        tokenizer.pad_token_id = tokenizer.bos_token_id
+        tokenizer.pad_token_id = tokenizer.bos_token_id 
         model.config.pad_token_id = tokenizer.pad_token_id
         model.config.eos_token_id = tokenizer.eos_token_id
 

@@ -126,14 +126,15 @@ class SFTTrainer(ABC):
 
             # train
             self.model.train()
-            for prompt_id_lens, inputs, attention_masks, infos in self.train_dataloader:
+            for prompt_id_lens, inputs, attention_masks, loss_masks, infos in self.train_dataloader:
                 if self.packing_samples:
                     inputs = inputs.to(torch.cuda.current_device())
                     attention_mask = attention_masks.to(torch.cuda.current_device())
+                    loss_masks = loss_masks.to(torch.cuda.current_device())
                 else:
                     inputs = inputs.to(torch.cuda.current_device()).squeeze(1)
                     attention_mask = attention_masks.to(torch.cuda.current_device()).squeeze(1)
-
+                    loss_masks = loss_masks.to(torch.cuda.current_device()).squeeze(1)
                 if self.strategy.ring_attn_group is None:
                     output = self.model(inputs, attention_mask=attention_mask, return_output=True)
                 else:
@@ -147,7 +148,7 @@ class SFTTrainer(ABC):
 
                 # loss function
                 labels = torch.where(
-                    attention_mask.bool(),
+                    (attention_mask*loss_masks).bool(),
                     inputs,
                     self.loss_fn.IGNORE_INDEX,
                 )
@@ -237,14 +238,16 @@ class SFTTrainer(ABC):
                 disable=not self.strategy.is_rank_0(),
             )
 
-            for prompt_id_lens, inputs, attention_masks, infos in eval_dataloader:
+            for prompt_id_lens, inputs, attention_masks, loss_masks, infos in eval_dataloader:
                 if self.packing_samples:
                     inputs = inputs.to(torch.cuda.current_device())
                     attention_mask = attention_masks.to(torch.cuda.current_device())
+                    loss_masks = loss_masks.to(torch.cuda.current_device())
                 else:
                     inputs = inputs.to(torch.cuda.current_device()).squeeze(1)
                     attention_mask = attention_masks.to(torch.cuda.current_device()).squeeze(1)
-
+                    loss_masks = loss_masks.to(torch.cuda.current_device()).squeeze(1)
+                    
                 if self.strategy.ring_attn_group is None:
                     output = self.model(inputs, attention_mask=attention_mask, return_output=True)
                 else:
@@ -258,7 +261,7 @@ class SFTTrainer(ABC):
 
                 # loss function
                 labels = torch.where(
-                    attention_mask.bool(),
+                    (attention_mask*loss_masks).bool(),
                     inputs,
                     self.loss_fn.IGNORE_INDEX,
                 )

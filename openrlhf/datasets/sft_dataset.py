@@ -51,6 +51,7 @@ class SFTDataset(Dataset):
         pretrain_mode=False,
         num_processors=8,  # Specify the number of processors you want to use
         multiple_of=1,
+        response_template=None,
     ) -> None:
         super().__init__()
         self.tokenizer = tokenizer
@@ -58,6 +59,9 @@ class SFTDataset(Dataset):
         self.pretrain_mode = pretrain_mode
         self.max_length = max_length
         self.multiple_of = multiple_of
+
+        # if there is response_template, mask only the response part at each sequence
+        self.response_template = response_template
 
         # chat template
         self.input_template = input_template
@@ -133,6 +137,30 @@ class SFTDataset(Dataset):
             return_tensors="pt",
             add_special_tokens=False,
         )
+        
+        loss_mask = torch.zeros_like(input_token["input_ids"])
+        if self.response_template is not None:
+            response_tokens = self.tokenizer(self.response_template, return_tensors="pt", add_special_tokens=False)["input_ids"].flatten()
+            for i in range(len(input_token["input_ids"])):
+                for id in torch.where(input_token["input_ids"][i].flatten() == response_tokens[0])[0]:
+                    # print("chosen_tokens", chosen_token["input_ids"][i][id:id+len(response_tokens)].flatten() )
+                    # print("response_tokens", response_tokens)
+                    # print("chosen_tokens == response_tokens", chosen_token["input_ids"][i][id:id+len(response_tokens)].flatten() == response_tokens)
+                    if torch.all(input_token["input_ids"][i][id:id+len(response_tokens)].flatten() == response_tokens):
+                        start_id = id + len(response_tokens)
+                        # print("found a match")
+                    else:
+                        continue
+                    # end_id = None
+                    for j in range(start_id, len(input_token["input_ids"][i])):
+                        if input_token["input_ids"][i][j] == self.tokenizer.eos_token_id:
+                            end_id = j
+                            break
+                    loss_mask[i][start_id:end_id+1] = 1
+            
+        else:
+            loss_mask = input_token["attention_mask"]
+        
 
         if not self.pretrain_mode:
             # to avoid EOS_token truncation
@@ -140,24 +168,27 @@ class SFTDataset(Dataset):
             input_token["attention_mask"][0][-1] = True
         info = {"input": prompt, "output": response, "input_length": input_token["attention_mask"].int().sum().item()}
 
-        return prompt_ids_len, input_token["input_ids"], input_token["attention_mask"], info
+        return prompt_ids_len, input_token["input_ids"], input_token["attention_mask"], loss_mask, info
 
     def collate_fn(self, item_list):
         prompt_ids_lens = []
         input_ids = []
         attention_masks = []
+        loss_masks = []
         infos = {"input": [], "output": []}
 
-        for prompt_ids_len, input_id, attention_mask, info in item_list:
+        for prompt_ids_len, input_id, attention_mask, loss_mask, info in item_list:
             prompt_ids_lens.append(prompt_ids_len)
             input_ids.append(input_id)
             attention_masks.append(attention_mask)
+            loss_masks.append(loss_mask)
             infos["input"].append(info["input"])
             infos["output"].append(info["output"])
 
         input_ids = zero_pad_sequences(input_ids, "right", self.tokenizer.pad_token_id)
         attention_masks = zero_pad_sequences(attention_masks, "right")
-        return prompt_ids_lens, input_ids, attention_masks, infos
+        loss_masks = zero_pad_sequences(loss_masks, "right")
+        return prompt_ids_lens, input_ids, attention_masks, loss_masks,infos
 
     def packing_collate_fn(self, item_list):
         packed_input_ids = []

@@ -186,7 +186,7 @@ class RewardDataset(Dataset):
                     # print("chosen_tokens", chosen_token["input_ids"][i][id:id+len(response_tokens)].flatten() )
                     # print("response_tokens", response_tokens)
                     # print("chosen_tokens == response_tokens", chosen_token["input_ids"][i][id:id+len(response_tokens)].flatten() == response_tokens)
-                    if torch.all(chosen_token["input_ids"][i][id:id+len(response_tokens)].flatten() == response_tokens):
+                    if len(chosen_token["input_ids"][i][id:id+len(response_tokens)].flatten()) == len(response_tokens) and torch.all(chosen_token["input_ids"][i][id:id+len(response_tokens)].flatten() == response_tokens):
                         start_id = id + len(response_tokens)
                         # print("found a match")
                     else:
@@ -200,7 +200,7 @@ class RewardDataset(Dataset):
             
             for i in range(len(reject_token["input_ids"])):
                 for id in torch.where(reject_token["input_ids"][i].flatten()  == response_tokens[0])[0]:
-                    if torch.all(reject_token["input_ids"][i][id:id+len(response_tokens)].flatten() == response_tokens):
+                    if len(reject_token["input_ids"][i][id:id+len(response_tokens)].flatten()) == len(response_tokens) and torch.all(reject_token["input_ids"][i][id:id+len(response_tokens)].flatten() == response_tokens):
                         start_id = id + len(response_tokens)
                     else:
                         continue

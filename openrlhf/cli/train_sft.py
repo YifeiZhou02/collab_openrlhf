@@ -63,6 +63,7 @@ def train(args):
         pretrain_mode=args.pretrain_mode,
         input_template=args.input_template,
         multiple_of=args.ring_attn_size,
+        response_template=args.response_template,
     )
     eval_dataset = SFTDataset(
         eval_data,
@@ -72,6 +73,7 @@ def train(args):
         pretrain_mode=args.pretrain_mode,
         input_template=args.input_template,
         multiple_of=args.ring_attn_size,
+        response_template=args.response_template,
     )
 
     # prepare dataloader
@@ -174,6 +176,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr_scheduler", type=str, default="cosine_with_min_lr")
     parser.add_argument("--l2", type=float, default=0, help="weight decay loss")
     parser.add_argument("--adam_betas", type=float, nargs=2, default=(0.9, 0.95), help="Betas for Adam optimizer")
+    parser.add_argument("--response_template", type=str, default=None, help="Response template for SFT")
 
     # ring-attention
     parser.add_argument("--ring_attn_size", type=int, default=1, help="Ring attention group size")

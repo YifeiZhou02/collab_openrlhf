@@ -43,7 +43,8 @@ class UnpairedPreferenceDataset(Dataset):
     """
 
     def __init__(
-        self, dataset, tokenizer: Callable, max_length: int, strategy, input_template=None, num_processors=8
+        self, dataset, tokenizer: Callable, max_length: int, strategy, input_template=None, num_processors=8,
+        response_template=None
     ) -> None:
         super().__init__()
         self.tokenizer = tokenizer
@@ -56,6 +57,9 @@ class UnpairedPreferenceDataset(Dataset):
         self.output_key = getattr(self.strategy.args, "output_key", None)
         self.label_key = getattr(self.strategy.args, "label_key", None)
         self.apply_chat_template = getattr(self.strategy.args, "apply_chat_template", False)
+
+        # if there is response_template, mask only the response part at each sequence
+        self.response_template = response_template
 
         if self.apply_chat_template:
             self.apply_chat_template = self.tokenizer.apply_chat_template
@@ -117,27 +121,54 @@ class UnpairedPreferenceDataset(Dataset):
                 add_special_tokens=False,
             )
 
+            loss_mask = torch.zeros_like(inputs["input_ids"])
+            if self.response_template is not None:
+                response_tokens = self.tokenizer(self.response_template, return_tensors="pt", add_special_tokens=False)["input_ids"].flatten()
+                for i in range(len(inputs["input_ids"])):
+                    for id in torch.where(inputs["input_ids"][i].flatten() == response_tokens[0])[0]:
+                        # print("chosen_tokens", chosen_token["input_ids"][i][id:id+len(response_tokens)].flatten() )
+                        # print("response_tokens", response_tokens)
+                        # print("chosen_tokens == response_tokens", chosen_token["input_ids"][i][id:id+len(response_tokens)].flatten() == response_tokens)
+                        if torch.all(inputs["input_ids"][i][id:id+len(response_tokens)].flatten() == response_tokens):
+                            start_id = id + len(response_tokens)
+                            # print("found a match")
+                        else:
+                            continue
+                        # end_id = None
+                        for j in range(start_id, len(inputs["input_ids"][i])):
+                            if inputs["input_ids"][i][j] == self.tokenizer.eos_token_id:
+                                end_id = j
+                                break
+                        loss_mask[i][start_id:end_id+1] = 1
+                
+            else:
+                loss_mask = inputs["attention_mask"]
+
             inputs["input_ids"][0][-1] = self.tokenizer.eos_token_id
             inputs["attention_mask"][0][-1] = True
-            return inputs["input_ids"], inputs["attention_mask"]
+            return inputs["input_ids"], inputs["attention_mask"], loss_mask
 
         tot_ids, tot_masks, tot_labels, prompt_ids_lens = [], [], [], []
+        loss_masks = []
         for prompt, response, label, prompt_ids_len in item_list:
-            input_ids, attention_mask = tokenizer(prompt, response)
+            input_ids, attention_mask, loss_mask = tokenizer(prompt, response)
             tot_ids.append(input_ids)
             tot_masks.append(attention_mask)
+            loss_masks.append(loss_mask)
             tot_labels.append(label)
             prompt_ids_lens.append(prompt_ids_len)
 
         # add unmatched y'| x (used to estimate the KL divergence between policy and reference)
         for idx in range(len(item_list)):
             next_idx = (idx + 1) % len(item_list)
-            input_ids, attention_mask = tokenizer(item_list[idx][0], item_list[next_idx][1])
+            input_ids, attention_mask, loss_mask = tokenizer(item_list[idx][0], item_list[next_idx][1])
             tot_ids.append(input_ids)
             tot_masks.append(attention_mask)
             tot_labels.append(-1)
+            loss_masks.append(loss_mask)
             prompt_ids_lens.append(item_list[idx][3])
 
         input_ids = zero_pad_sequences(tot_ids, side="right", value=self.tokenizer.pad_token_id)
         attention_mask = zero_pad_sequences(tot_masks, side="right")
-        return input_ids, attention_mask, torch.LongTensor(tot_labels), prompt_ids_lens
+        loss_masks = zero_pad_sequences(loss_masks, side="right")
+        return input_ids, attention_mask, loss_masks, torch.LongTensor(tot_labels), prompt_ids_lens

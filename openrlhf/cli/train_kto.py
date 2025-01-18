@@ -70,10 +70,12 @@ def train(args):
     eval_data = eval_data.select(range(min(args.max_samples, len(eval_data))))
 
     train_dataset = UnpairedPreferenceDataset(
-        train_data, tokenizer, args.max_len, strategy, input_template=args.input_template
+        train_data, tokenizer, args.max_len, strategy, input_template=args.input_template,
+        response_template=args.response_template
     )
     eval_dataset = UnpairedPreferenceDataset(
-        eval_data, tokenizer, args.max_len, strategy, input_template=args.input_template
+        eval_data, tokenizer, args.max_len, strategy, input_template=args.input_template,
+        response_template=args.response_template
     )
     train_dataloader = strategy.setup_dataloader(
         train_dataset,
@@ -189,6 +191,8 @@ if __name__ == "__main__":
     parser.add_argument("--input_key", type=str, default="input", help="JSON dataset key")
     parser.add_argument("--output_key", type=str, default=None, help="JSON dataset key")
     parser.add_argument("--label_key", type=str, default="label")
+    parser.add_argument("--response_template", type=str, default=None)
+
 
     parser.add_argument("--input_template", type=str, default="User: {}\nAssistant: ")
     parser.add_argument(
