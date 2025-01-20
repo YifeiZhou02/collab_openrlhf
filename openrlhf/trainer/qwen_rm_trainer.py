@@ -129,7 +129,7 @@ class QwenRewardModelTrainer(ABC):
             self.model.train()
             for data in self.train_dataloader:
                 if not self.packing_samples:
-                    chosen_ids, c_mask, reject_ids, r_mask, chosen_pixel_values, rejected_pixel_values, chosen_image_thw, rejected_image_thw, margin = data
+                    chosen_ids, c_mask, reject_ids, r_mask, _, _, chosen_pixel_values, rejected_pixel_values, chosen_image_thw, rejected_image_thw, margin = data
                     chosen_ids = chosen_ids.squeeze(1).to(torch.cuda.current_device())
                     c_mask = c_mask.squeeze(1).to(torch.cuda.current_device())
                     chosen_pixel_values = chosen_pixel_values.to(torch.cuda.current_device())
@@ -246,7 +246,7 @@ class QwenRewardModelTrainer(ABC):
             loss_sum = 0
             for data in eval_dataloader:
                 if not self.packing_samples:
-                    chosen_ids, c_mask, reject_ids, r_mask, chosen_pixel_values, rejected_pixel_values, chosen_image_thw, rejected_image_thw, margin = data
+                    chosen_ids, c_mask, reject_ids, r_mask, _, _, chosen_pixel_values, rejected_pixel_values, chosen_image_thw, rejected_image_thw, margin = data
                     chosen_ids = chosen_ids.squeeze(1).to(torch.cuda.current_device())
                     c_mask = c_mask.squeeze(1).to(torch.cuda.current_device())
                     chosen_pixel_values = chosen_pixel_values.to(torch.cuda.current_device())

@@ -2,8 +2,8 @@ import os
 
 from datasets import interleave_datasets, load_dataset, load_from_disk
 from transformers import AutoTokenizer, AutoProcessor
-min_pixels = 64*28*28
-max_pixels = 256*28*28 
+min_pixels = 16*28*28
+max_pixels = 64*28*28 
 
 
 def get_tokenizer(pretrain, model, padding_side="left", strategy=None, use_fast=True):
@@ -20,7 +20,7 @@ def get_tokenizer(pretrain, model, padding_side="left", strategy=None, use_fast=
     return tokenizer
 
 def get_qwen_processor(pretrain, model, padding_side="left", strategy=None, use_fast=True):
-    processor = AutoProcessor.from_pretrained(pretrain, min_pixels=min_pixels, max_pixels=max_pixels)
+    processor = AutoProcessor.from_pretrained("/fsx-ram/shared/Qwen2-VL-7B-Instruct", min_pixels=min_pixels, max_pixels=max_pixels)
     processor.tokenizer.padding_side = padding_side
     if processor.tokenizer.pad_token is None:
         processor.tokenizer.pad_token = processor.tokenizer.bos_token
